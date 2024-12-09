@@ -51,7 +51,7 @@ def default_transforms(
     """
 
     def count_doc_length_bins(documents, bin_ranges):
-        data = [num_tokens_from_string(doc.page_content) for doc in documents]
+        data = [num_tokens_from_string(doc.text) for doc in documents]
         bins = {f"{start}-{end}": 0 for start, end in bin_ranges}
 
         for num in data:
@@ -127,7 +127,8 @@ def default_transforms(
         ]
     elif result["101-500"] >= 0.25:
         summary_extractor = SummaryExtractor(
-            llm=llm, filter_nodes=lambda node: filter_doc_with_num_tokens(node, 100)
+            llm=llm, filter_nodes=lambda node: filter_doc_with_num_tokens(
+                node, 100)
         )
         summary_emb_extractor = EmbeddingExtractor(
             embedding_model=embedding_model,

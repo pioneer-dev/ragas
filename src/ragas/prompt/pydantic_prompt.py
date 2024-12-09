@@ -74,7 +74,8 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
             + "\n-----------------------------\n"
             + "\nNow perform the same with the following input\n"
             + (
-                "input: " + data.model_dump_json(indent=4, exclude_none=True) + "\n"
+                "input: " +
+                data.model_dump_json(indent=4, exclude_none=True) + "\n"
                 if data is not None
                 else "Input: (None)\n"
             )
@@ -182,18 +183,18 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
             metadata={"type": ChainType.RAGAS_PROMPT},
         )
         prompt_value = PromptValue(text=self.to_string(processed_data))
-        resp = await llm.generate(
-            prompt_value,
-            n=n,
-            temperature=temperature,
-            stop=stop,
-            callbacks=prompt_cb,
-        )
+        try:
+            # Пробуем выполнить первый вариант
+            resp = await llm.acomplete(prompt_value)
+        except Exception as e:
+            # Если возникает ошибка, переключаемся на второй вариант
+            resp = await llm.agenerate_text(prompt_value)
 
         output_models = []
         parser = RagasOutputParser(pydantic_object=self.output_model)
         for i in range(n):
-            output_string = resp.generations[0][i].text
+            output_string = (resp.text if hasattr(resp, 'text')
+                             else resp.generations[0][i].text)
             try:
                 answer = await parser.parse_output_string(
                     output_string=output_string,
@@ -202,11 +203,13 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
                     callbacks=prompt_cb,
                     retries_left=retries_left,
                 )
-                processed_output = self.process_output(answer, data)  # type: ignore
+                processed_output = self.process_output(
+                    answer, data)  # type: ignore
                 output_models.append(processed_output)
             except RagasOutputParserException as e:
                 prompt_rm.on_chain_error(error=e)
-                logger.error("Prompt %s failed to parse output: %s", self.name, e)
+                logger.error(
+                    "Prompt %s failed to parse output: %s", self.name, e)
                 raise e
 
         prompt_rm.on_chain_end({"output": output_models})
@@ -236,7 +239,8 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
         strings = get_all_strings(self.examples)
         translated_strings = await translate_statements_prompt.generate(
             llm=llm,
-            data=ToTranslate(target_language=target_language, statements=strings),
+            data=ToTranslate(target_language=target_language,
+                             statements=strings),
         )
 
         translated_examples = update_strings(
@@ -253,7 +257,8 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
             translated_instruction = await translate_statements_prompt.generate(
                 llm=llm,
                 data=ToTranslate(
-                    target_language=target_language, statements=[self.instruction]
+                    target_language=target_language, statements=[
+                        self.instruction]
                 ),
             )
             new_prompt.instruction = translated_instruction.statements[0]
@@ -323,7 +328,8 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
             "language": self.language,
             "instruction": self.instruction,
             "examples": [
-                {"input": example[0].model_dump(), "output": example[1].model_dump()}
+                {"input": example[0].model_dump(
+                ), "output": example[1].model_dump()}
                 for example in self.examples
             ],
         }
@@ -414,7 +420,8 @@ class RagasOutputParser(PydanticOutputParser[OutputModel]):
                     callbacks=retry_cb,
                     retries_left=retries_left - 1,
                 )
-                retry_rm.on_chain_end({"fixed_output_string": fixed_output_string})
+                retry_rm.on_chain_end(
+                    {"fixed_output_string": fixed_output_string})
                 result = fixed_output_string
             else:
                 raise RagasOutputParserException()

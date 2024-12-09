@@ -163,14 +163,17 @@ class LangchainLLMWrapper(BaseRagasLLM):
                 isinstance(resp, ChatGeneration)
                 and t.cast(ChatGeneration, resp).message is not None
             ):
-                resp_message: BaseMessage = t.cast(ChatGeneration, resp).message
+                resp_message: BaseMessage = t.cast(
+                    ChatGeneration, resp).message
                 if resp_message.response_metadata.get("finish_reason") is not None:
-                    finish_reason = resp_message.response_metadata.get("finish_reason")
+                    finish_reason = resp_message.response_metadata.get(
+                        "finish_reason")
                     is_finished_list.append(
                         finish_reason in ["stop", "STOP", "MAX_TOKENS"]
                     )
                 elif resp_message.response_metadata.get("stop_reason") is not None:
-                    stop_reason = resp_message.response_metadata.get("stop_reason")
+                    stop_reason = resp_message.response_metadata.get(
+                        "stop_reason")
                     is_finished_list.append(
                         stop_reason in ["end_turn", "STOP", "MAX_TOKENS"]
                     )
@@ -293,7 +296,8 @@ class LlamaIndexLLMWrapper(BaseRagasLLM):
         callbacks: Callbacks,
     ) -> dict[str, t.Any]:
         if n != 1:
-            logger.warning("n values greater than 1 not support for LlamaIndex LLMs")
+            logger.warning(
+                "n values greater than 1 not support for LlamaIndex LLMs")
         if temperature != 1e-8:
             logger.info("temperature kwarg passed to LlamaIndex LLM")
         if stop is not None:
@@ -322,8 +326,7 @@ class LlamaIndexLLMWrapper(BaseRagasLLM):
         stop: t.Optional[t.List[str]] = None,
         callbacks: Callbacks = None,
     ) -> LLMResult:
-        kwargs = self.check_args(n, temperature, stop, callbacks)
-        li_response = self.llm.complete(prompt.to_string(), **kwargs)
+        li_response = self.llm.complete(prompt.to_string())
 
         return LLMResult(generations=[[Generation(text=li_response.text)]])
 
@@ -335,11 +338,7 @@ class LlamaIndexLLMWrapper(BaseRagasLLM):
         stop: t.Optional[t.List[str]] = None,
         callbacks: Callbacks = None,
     ) -> LLMResult:
-        if temperature is None:
-            temperature = self.get_temperature(n)
-
-        kwargs = self.check_args(n, temperature, stop, callbacks)
-        li_response = await self.llm.acomplete(prompt.to_string(), **kwargs)
+        li_response = await self.llm.acomplete(prompt.to_string())
 
         return LLMResult(generations=[[Generation(text=li_response.text)]])
 
