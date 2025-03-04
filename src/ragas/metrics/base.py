@@ -81,7 +81,8 @@ class Metric(ABC):
         a property and raises `ValueError` if columns are not in `VALID_COLUMNS`.
     """
 
-    _required_columns: t.Dict[MetricType, t.Set[str]] = field(default_factory=dict)
+    _required_columns: t.Dict[MetricType,
+                              t.Set[str]] = field(default_factory=dict)
     name: str = field(default="", repr=True)
 
     def __post_init__(self):
@@ -121,7 +122,8 @@ class Metric(ABC):
                 required_columns[k.name] = set()
                 for column in v:
                     if column.endswith(":optional"):
-                        required_columns[k.name].add(column[: -len(":optional")])
+                        required_columns[k.name].add(
+                            column[: -len(":optional")])
                     else:
                         required_columns[k.name].add(column)
             return required_columns
@@ -158,7 +160,8 @@ class Metric(ABC):
                         "It seems like your running this in a jupyter-like environment. Please install nest_asyncio with `pip install nest_asyncio` to make it work."
                     )
             loop = asyncio.get_event_loop()
-            score = loop.run_until_complete(self._ascore(row=row, callbacks=group_cm))
+            score = loop.run_until_complete(
+                self._ascore(row=row, callbacks=group_cm))
         except Exception as e:
             if not group_cm.ended:
                 rm.on_chain_error(e)
@@ -228,7 +231,7 @@ class MetricWithLLM(Metric, PromptMixin):
             raise ValueError(
                 f"Metric '{self.name}' has no valid LLM provided (self.llm is None). Please initantiate a the metric with an LLM to run."  # noqa
             )
-        self.llm.set_run_config(run_config)
+        # self.llm.set_run_config(run_config)
 
     def train(
         self,

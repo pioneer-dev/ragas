@@ -238,7 +238,8 @@ class TestsetGenerator:
 
             # create the transforms
             transforms = default_transforms(
-                documents=[LCDocument(page_content=doc.text) for doc in documents],
+                documents=[LCDocument(page_content=doc.text)
+                           for doc in documents],
                 llm=llm_for_transforms,
                 embedding_model=embedding_model_for_transforms,
             )
@@ -338,7 +339,8 @@ class TestsetGenerator:
         if token_usage_parser is not None:
             from ragas.cost import CostCallbackHandler
 
-            cost_cb = CostCallbackHandler(token_usage_parser=token_usage_parser)
+            cost_cb = CostCallbackHandler(
+                token_usage_parser=token_usage_parser)
             ragas_callbacks["cost_cb"] = cost_cb
         else:
             cost_cb = None
@@ -361,9 +363,11 @@ class TestsetGenerator:
             # TODO: Edit this before pre-release
             from ragas.utils import patch_logger
 
-            patch_logger("ragas.experimental.testset.synthesizers", logging.DEBUG)
+            patch_logger(
+                "ragas.experimental.testset.synthesizers", logging.DEBUG)
             patch_logger("ragas.experimental.testset.graph", logging.DEBUG)
-            patch_logger("ragas.experimental.testset.transforms", logging.DEBUG)
+            patch_logger(
+                "ragas.experimental.testset.transforms", logging.DEBUG)
 
         if self.persona_list is None:
             self.persona_list = generate_personas_from_kg(
@@ -450,12 +454,14 @@ class TestsetGenerator:
             sample_generation_rm.on_chain_error(e)
             raise e
         else:
-            sample_generation_rm.on_chain_end(outputs={"eval_samples": eval_samples})
+            sample_generation_rm.on_chain_end(
+                outputs={"eval_samples": eval_samples})
 
         # build the testset
         testsets = []
         for sample, additional_info in zip(eval_samples, additional_testset_info):
-            testsets.append(TestsetSample(eval_sample=sample, **additional_info))
+            testsets.append(TestsetSample(
+                eval_sample=sample, **additional_info))
         testset = Testset(samples=testsets, cost_cb=cost_cb)
         testset_generation_rm.on_chain_end({"testset": testset})
 
@@ -468,7 +474,7 @@ class TestsetGenerator:
                 ],
                 evolution_percentages=[p for _, p in query_distribution],
                 num_rows=testset_size,
-                language="english",
+                language="russian",
             )
         )
         return testset
