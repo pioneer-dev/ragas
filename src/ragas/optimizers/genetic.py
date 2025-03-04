@@ -25,6 +25,7 @@ from ragas.run_config import RunConfig
 logger = logging.getLogger(__name__)
 
 RAGAS_OPTIMIZATION_GROUP = "ragas_optimization"
+MIN_ANNOTATIONS = 10
 
 example_type = t.TypeVar(
     "example_type", bound=t.Dict[t.Dict[str, t.Any], t.Dict[str, t.Any]]
@@ -36,7 +37,6 @@ class FormattedExamples(BaseModel):
 
     @classmethod
     def from_examples(cls, examples: t.List[example_type]) -> "FormattedExamples":
-
         formated_examples = []
         for example in examples:
             input_, output = example.values()
@@ -107,7 +107,7 @@ class FeedbackMutationPrompt(
 ):
     name: str = "feedback_mutation"
     instruction: str = (
-        "You're an expert reviewer. Given an instruction and a set of (input  containing (user_input, response, reference, etc), output, expected_output) examples, give maximum 3 feedbacks on how the instruction can be improved to correct the mistakes in incorrect outputs and reach expected output."
+        "You're an expert reviewer. Given an instruction and a set of (input  containing (user_input, response, reference, etc), output, expected_output) examples. After analyzing the examples, give maximum 3 concrete feedbacks on how the instruction can be modified so that the model arrives at the expected output."
         "Do not provide the feedback to add examples with the instruction."
     )
     input_model = FeedbackMutationInput
@@ -151,7 +151,6 @@ class GeneticOptimizer(Optimizer):
         with_debugging_logs=False,
         raise_exceptions: bool = True,
     ) -> t.Dict[str, str]:
-
         callbacks = callbacks or []
 
         if self.metric is None:
@@ -160,9 +159,14 @@ class GeneticOptimizer(Optimizer):
         if self.llm is None:
             raise ValueError("No llm provided for optimization.")
 
+        if len(dataset) < MIN_ANNOTATIONS:
+            raise ValueError(
+                f"Number of annotations should be greater than {MIN_ANNOTATIONS}. Please annotate {MIN_ANNOTATIONS-len(dataset)} more samples"
+            )
+
         population_size = config.get("population_size", 3)
         num_demonstrations = config.get("num_demonstrations", 3)
-        sample_size = config.get("sample_size", 10)
+        sample_size = config.get("sample_size", 12)
 
         # new group for optimization
         optimization_generation_rm, optimization_generation_grp = new_group(
@@ -187,7 +191,6 @@ class GeneticOptimizer(Optimizer):
         with tqdm(
             total=total_steps, desc="Overall Progress", dynamic_ncols=True
         ) as parent_pbar:
-
             parent_pbar.set_description(f"{stages[0]['name']} Step 1/{len(stages)}")
             initial_population = self.initialize_population(
                 dataset=dataset,
@@ -201,12 +204,13 @@ class GeneticOptimizer(Optimizer):
             )
 
             # get the default prompt used in the metric as seed prompt
-            seed_prompts = {
-                key: val.instruction
-                for key, val in self.metric.get_prompts().items()
-                if key in initial_population[0].keys()
-            }
-            initial_population.append(seed_prompts)
+            if len(initial_population) > 0:
+                seed_prompts = {
+                    key: val.instruction
+                    for key, val in self.metric.get_prompts().items()
+                    if key in initial_population[0].keys()
+                }
+                initial_population.append(seed_prompts)
 
             parent_pbar.set_description(f"{stages[1]['name']} Step 2/{len(stages)}")
             improved_prompts = self.feedback_mutation(
@@ -262,7 +266,6 @@ class GeneticOptimizer(Optimizer):
         raise_exceptions: bool = True,
         parent_pbar: t.Optional[tqdm] = None,
     ) -> t.List[t.Dict[str, str]]:
-
         initialize_population_rm, initialize_population_grp = new_group(
             name="Initializing Population",
             inputs={"population_size": population_size},
@@ -308,7 +311,6 @@ class GeneticOptimizer(Optimizer):
     async def _reverse_engineer_instruction(
         self, batch: t.List[SampleAnnotation], callbacks: Callbacks = None
     ) -> t.Dict[str, str]:
-
         if self.llm is None:
             raise ValueError("No llm provided for optimization.")
 
@@ -344,7 +346,6 @@ class GeneticOptimizer(Optimizer):
     async def _cross_over_prompts(
         self, parent_1: str, parent_2: str, callbacks: Callbacks = None
     ) -> str:
-
         if self.llm is None:
             raise ValueError("No llm provided for optimization.")
 
@@ -373,7 +374,6 @@ class GeneticOptimizer(Optimizer):
         raise_exceptions: bool = True,
         parent_pbar: t.Optional[tqdm] = None,
     ) -> t.List[t.Dict[str, str]]:
-
         if self.metric is None:
             raise ValueError("No metric provided for optimization.")
 
@@ -384,7 +384,7 @@ class GeneticOptimizer(Optimizer):
         )
         improved_candidates = []
         dataset = dataset.filter(lambda x: x["is_accepted"])
-
+        sample_size = min(sample_size, len(dataset))
         exec = Executor(
             desc="Feedback Mutation",
             raise_exceptions=raise_exceptions,
@@ -430,7 +430,6 @@ class GeneticOptimizer(Optimizer):
         raise_exceptions: bool = True,
         parent_pbar: t.Optional[tqdm] = None,
     ) -> t.Dict[str, str]:
-
         if self.llm is None:
             raise ValueError("No llm provided for optimization.")
 
@@ -470,7 +469,6 @@ class GeneticOptimizer(Optimizer):
         feedbacks: t.Dict[str, t.List[str]],
         callbacks: Callbacks = None,
     ) -> t.Dict[str, str]:
-
         if self.llm is None:
             raise ValueError("No llm provided for optimization.")
 
@@ -501,7 +499,6 @@ class GeneticOptimizer(Optimizer):
         target: t.List[float],
         callbacks: Callbacks = None,
     ) -> t.Dict[str, t.List[str]]:
-
         def dict_to_str(dict: t.Dict[str, t.Any]) -> str:
             return "".join(f"\n{key}:\n\t{val}\n" for key, val in dict.items())
 
@@ -524,12 +521,13 @@ class GeneticOptimizer(Optimizer):
                                 exclude_none=True
                             )
                         ),
-                        output=traces[idx][prompt_name]["output"][0].model_dump(
+                        output=traces[idx][prompt_name]["output"].model_dump(
                             exclude_none=True
                         ),
                         expected_output=dataset[idx]["prompts"][prompt_name][
-                            "prompt_output"
-                        ],
+                            "edited_output"
+                        ]
+                        or dataset[idx]["prompts"][prompt_name]["prompt_output"],
                     )
                     for idx in indices
                 ]
@@ -549,7 +547,6 @@ class GeneticOptimizer(Optimizer):
     def _get_evaluation_dataset(
         self, dataset: SingleMetricAnnotation
     ) -> t.Tuple[EvaluationDataset, t.List[float]]:
-
         if self.metric is None:
             raise ValueError("No metric provided for optimization.")
 
@@ -582,7 +579,6 @@ class GeneticOptimizer(Optimizer):
         run_id: t.Optional[UUID] = None,
         parent_pbar: t.Optional[tqdm] = None,
     ) -> EvaluationResult:
-
         if self.metric is None:
             raise ValueError("No metric provided for optimization.")
 
@@ -598,14 +594,6 @@ class GeneticOptimizer(Optimizer):
             _run_id=run_id,
             _pbar=parent_pbar,
         )
-        # remap the traces to the original prompt names
-        remap_traces = {val.name: key for key, val in self.metric.get_prompts().items()}
-        for trace in results.traces:
-            for key in remap_traces:
-                if key in trace[self.metric.name]:
-                    trace[self.metric.name][remap_traces[key]] = trace[
-                        self.metric.name
-                    ].pop(key)
         return results
 
     def evaluate_fitness(
@@ -620,7 +608,6 @@ class GeneticOptimizer(Optimizer):
         raise_exceptions: bool = True,
         parent_pbar: t.Optional[tqdm] = None,
     ) -> t.List[float]:
-
         if self.metric is None:
             raise ValueError("No metric provided for optimization.")
 
@@ -635,7 +622,6 @@ class GeneticOptimizer(Optimizer):
         )
         run_id = initialize_population_rm.run_id
         for candidate in candidates:
-
             results = self.evaluate_candidate(
                 candidate=candidate,
                 eval_dataset=eval_dataset,
@@ -660,7 +646,6 @@ class GeneticOptimizer(Optimizer):
         parent_y: t.Dict[str, str],
         callbacks: Callbacks,
     ):
-
         if parent_x.keys() != parent_y.keys():
             raise ValueError("The parents must have the same prompt names.")
 
@@ -684,7 +669,6 @@ class GeneticOptimizer(Optimizer):
         raise_exceptions: bool = True,
         parent_pbar: t.Optional[tqdm] = None,
     ):
-
         if self.metric is None:
             raise ValueError("No metric provided for optimization.")
 
@@ -701,7 +685,6 @@ class GeneticOptimizer(Optimizer):
         run_id = cross_over_rm.run_id
         prediction_vectors = []
         for candidate in candidates:
-
             results = self.evaluate_candidate(
                 candidate=candidate,
                 eval_dataset=eval_dataset,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ from ragas._version import __version__
 from ragas.callbacks import ChainType, new_group
 from ragas.exceptions import RagasOutputParserException
 
-from .base import BasePrompt, StringIO, _check_if_language_is_supported
+from .base import BasePrompt, StringIO
 from .utils import extract_json, get_all_strings, update_strings
 
 if t.TYPE_CHECKING:
@@ -31,6 +32,7 @@ OutputModel = t.TypeVar("OutputModel", bound=BaseModel)
 
 
 class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
+    # these are class attributes
     input_model: t.Type[InputModel]
     output_model: t.Type[OutputModel]
     instruction: str
@@ -43,7 +45,9 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
         return (
             f"Please return the output in a JSON format that complies with the "
             f"following schema as specified in JSON Schema:\n"
-            f"{self.output_model.model_json_schema()}"
+            f"{json.dumps(self.output_model.model_json_schema())}"
+            "Do not use single quotes in your response but double quotes,"
+            "properly escaped with a backslash."
         )
 
     def _generate_examples(self):
@@ -175,6 +179,7 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
             If there's an error parsing the output.
         """
         callbacks = callbacks or []
+
         processed_data = self.process_input(data)
         prompt_rm, prompt_cb = new_group(
             name=self.name,
@@ -228,14 +233,6 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
         Adapt the prompt to a new language.
         """
 
-        # throws ValueError if language is not supported
-        _check_if_language_is_supported(target_language)
-
-        # set the original hash, this is used to
-        # identify the original prompt object when loading from file
-        if self.original_hash is None:
-            self.original_hash = hash(self)
-
         strings = get_all_strings(self.examples)
         translated_strings = await translate_statements_prompt.generate(
             llm=llm,
@@ -262,6 +259,8 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
                 ),
             )
             new_prompt.instruction = translated_instruction.statements[0]
+
+        new_prompt.original_hash = hash(new_prompt)
 
         return new_prompt
 
@@ -292,17 +291,21 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
                 (input_model.model_dump_json(), output_model.model_dump_json())
             )
 
-        # not sure if input_model and output_model should be included
-        return hash(
-            (
-                self.name,
-                self.input_model,
-                self.output_model,
-                self.instruction,
-                *examples,
-                self.language,
-            )
-        )
+        # create a SHA-256 hash object
+        hasher = hashlib.sha256()
+
+        # update the hash object with the bytes of each attribute
+        hasher.update(self.name.encode("utf-8"))
+        hasher.update(self.input_model.__name__.encode("utf-8"))
+        hasher.update(self.output_model.__name__.encode("utf-8"))
+        hasher.update(self.instruction.encode("utf-8"))
+        for example in examples:
+            hasher.update(example[0].encode("utf-8"))
+            hasher.update(example[1].encode("utf-8"))
+        hasher.update(self.language.encode("utf-8"))
+
+        # return the integer value of the hash
+        return int(hasher.hexdigest(), 16)
 
     def __eq__(self, other):
         if not isinstance(other, PydanticPrompt):
@@ -335,13 +338,13 @@ class PydanticPrompt(BasePrompt, t.Generic[InputModel, OutputModel]):
         }
         if os.path.exists(file_path):
             raise FileExistsError(f"The file '{file_path}' already exists.")
-        with open(file_path, "w") as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             print(f"Prompt saved to {file_path}")
 
     @classmethod
     def load(cls, file_path: str) -> "PydanticPrompt[InputModel, OutputModel]":
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         # You might want to add version compatibility checks here
@@ -399,7 +402,7 @@ class RagasOutputParser(PydanticOutputParser[OutputModel]):
         llm: BaseRagasLLM,
         callbacks: Callbacks,
         retries_left: int = 1,
-    ):
+    ) -> OutputModel:
         callbacks = callbacks or []
         try:
             jsonstr = extract_json(output_string)
@@ -422,7 +425,7 @@ class RagasOutputParser(PydanticOutputParser[OutputModel]):
                 )
                 retry_rm.on_chain_end(
                     {"fixed_output_string": fixed_output_string})
-                result = fixed_output_string
+                result = super().parse(fixed_output_string.text)
             else:
                 raise RagasOutputParserException()
         return result

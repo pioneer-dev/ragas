@@ -9,13 +9,25 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import numpy as np
+import requests
 from datasets import Dataset as HFDataset
 from pydantic import BaseModel, field_validator
 
+from ragas._version import __version__
 from ragas.callbacks import ChainRunEncoder, parse_run_traces
 from ragas.cost import CostCallbackHandler
+from ragas.exceptions import UploadException
 from ragas.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
-from ragas.utils import RAGAS_API_URL, safe_nanmean
+from ragas.sdk import (
+    RAGAS_API_SOURCE,
+    build_evaluation_app_url,
+    check_api_response,
+    get_api_url,
+    get_app_token,
+    get_app_url,
+    upload_packet,
+)
+from ragas.utils import safe_nanmean
 
 if t.TYPE_CHECKING:
     from pathlib import Path
@@ -176,9 +188,12 @@ class RagasDataset(ABC, t.Generic[Sample]):
         if len(samples) == 0:
             return samples
 
-        first_sample_type = type(self.samples[0])
-        if not all(isinstance(sample, first_sample_type) for sample in self.samples):
-            raise ValueError("All samples must be of the same type")
+        first_sample_type = type(samples[0])
+        for i, sample in enumerate(samples):
+            if not isinstance(sample, first_sample_type):
+                raise ValueError(
+                    f"Sample at index {i} is of type {type(sample)}, expected {first_sample_type}"
+                )
 
         return samples
 
@@ -506,10 +521,11 @@ class EvaluationResult:
             cost_per_input_token, cost_per_output_token, per_model_costs
         )
 
-    def upload(self, base_url: str = RAGAS_API_URL, verbose: bool = True) -> str:
+    def upload(
+        self,
+        verbose: bool = True,
+    ) -> str:
         from datetime import datetime, timezone
-
-        import requests
 
         timestamp = datetime.now(timezone.utc).isoformat()
         root_trace = [
@@ -523,29 +539,35 @@ class EvaluationResult:
             },
             cls=ChainRunEncoder,
         )
-
-        response = requests.post(
-            f"{base_url}/alignment/evaluation",
-            data=packet,
-            headers={"Content-Type": "application/json"},
+        response = upload_packet(
+            path="/alignment/evaluation",
+            data_json_string=packet,
         )
 
-        if response.status_code != 200:
-            raise Exception(f"Failed to upload results: {response.text}")
+        # check status codes
+        app_url = get_app_url()
+        evaluation_app_url = build_evaluation_app_url(app_url, root_trace.run_id)
+        if response.status_code == 409:
+            # this evalution already exists
+            if verbose:
+                print(f"Evaluation run already exists. View at {evaluation_app_url}")
+            return evaluation_app_url
+        elif response.status_code != 200:
+            # any other error
+            raise UploadException(
+                status_code=response.status_code,
+                message=f"Failed to upload results: {response.text}",
+            )
 
-        evaluation_endpoint = (
-            f"https://app.ragas.io/alignment/evaluation/{root_trace.run_id}"
-        )
         if verbose:
-            print(f"Evaluation results uploaded! View at {evaluation_endpoint}")
-        return evaluation_endpoint
+            print(f"Evaluation results uploaded! View at {evaluation_app_url}")
+        return evaluation_app_url
 
 
 class PromptAnnotation(BaseModel):
     prompt_input: t.Dict[str, t.Any]
     prompt_output: t.Dict[str, t.Any]
-    is_accepted: bool
-    edited_output: t.Union[t.Dict[str, t.Any], None]
+    edited_output: t.Optional[t.Dict[str, t.Any]] = None
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -563,16 +585,30 @@ class SampleAnnotation(BaseModel):
 
 
 class MetricAnnotation(BaseModel):
-
     root: t.Dict[str, t.List[SampleAnnotation]]
 
     def __getitem__(self, key):
         return SingleMetricAnnotation(name=key, samples=self.root[key])
 
     @classmethod
-    def from_json(cls, path, metric_name: t.Optional[str]) -> "MetricAnnotation":
+    def _process_dataset(
+        cls, dataset: dict, metric_name: t.Optional[str]
+    ) -> "MetricAnnotation":
+        """
+        Process raw dataset into MetricAnnotation format
 
-        dataset = json.load(open(path))
+        Parameters
+        ----------
+        dataset : dict
+            Raw dataset to process
+        metric_name : str, optional
+            Name of the specific metric to filter
+
+        Returns
+        -------
+        MetricAnnotation
+            Processed annotation data
+        """
         if metric_name is not None and metric_name not in dataset:
             raise ValueError(f"Split {metric_name} not found in the dataset.")
 
@@ -583,6 +619,69 @@ class MetricAnnotation(BaseModel):
                 if metric_name is None or key == metric_name
             }
         )
+
+    @classmethod
+    def from_json(cls, path: str, metric_name: t.Optional[str]) -> "MetricAnnotation":
+        """Load annotations from a JSON file"""
+        dataset = json.load(open(path))
+        return cls._process_dataset(dataset, metric_name)
+
+    @classmethod
+    def from_app(
+        cls,
+        run_id: str,
+        metric_name: t.Optional[str] = None,
+    ) -> "MetricAnnotation":
+        """
+        Fetch annotations from a URL using either evaluation result or run_id
+
+        Parameters
+        ----------
+        run_id : str
+            Direct run ID to fetch annotations
+        metric_name : str, optional
+            Name of the specific metric to filter
+
+        Returns
+        -------
+        MetricAnnotation
+            Annotation data from the API
+
+        Raises
+        ------
+        ValueError
+            If run_id is not provided
+        """
+        if run_id is None:
+            raise ValueError("run_id must be provided")
+
+        endpoint = f"/api/v1/alignment/evaluation/annotation/{run_id}"
+
+        app_token = get_app_token()
+        base_url = get_api_url()
+        app_url = get_app_url()
+
+        response = requests.get(
+            f"{base_url}{endpoint}",
+            headers={
+                "Content-Type": "application/json",
+                "x-app-token": app_token,
+                "x-source": RAGAS_API_SOURCE,
+                "x-app-version": __version__,
+            },
+        )
+
+        check_api_response(response)
+        dataset = response.json()["data"]
+
+        if not dataset:
+            evaluation_url = build_evaluation_app_url(app_url, run_id)
+            raise ValueError(
+                f"No annotations found. Please annotate the Evaluation first then run this method. "
+                f"\nNote: you can annotate the evaluations using the Ragas app by going to {evaluation_url}"
+            )
+
+        return cls._process_dataset(dataset, metric_name)
 
     def __len__(self):
         return sum(len(value) for value in self.root.values())
@@ -613,7 +712,6 @@ class SingleMetricAnnotation(BaseModel):
 
     @classmethod
     def from_json(cls, path) -> "SingleMetricAnnotation":
-
         dataset = json.load(open(path))
 
         return cls(
@@ -622,7 +720,6 @@ class SingleMetricAnnotation(BaseModel):
         )
 
     def filter(self, function: t.Optional[t.Callable] = None):
-
         if function is None:
             function = lambda x: True  # noqa: E731
 
@@ -796,3 +893,14 @@ class SingleMetricAnnotation(BaseModel):
                 all_batches.append(batch)
 
         return all_batches
+
+    def get_prompt_annotations(self) -> t.Dict[str, t.List[PromptAnnotation]]:
+        """
+        Get all the prompt annotations for each prompt as a list.
+        """
+        prompt_annotations = defaultdict(list)
+        for sample in self.samples:
+            if sample.is_accepted:
+                for prompt_name, prompt_annotation in sample.prompts.items():
+                    prompt_annotations[prompt_name].append(prompt_annotation)
+        return prompt_annotations

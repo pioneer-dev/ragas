@@ -15,7 +15,8 @@ from ragas.dataset_schema import (
     RagasDataset,
     SingleTurnSample,
 )
-from ragas.utils import RAGAS_API_URL
+from ragas.exceptions import UploadException
+from ragas.sdk import get_app_url, upload_packet
 
 
 class TestsetSample(BaseSample):
@@ -135,17 +136,42 @@ class Testset(RagasDataset[TestsetSample]):
             cost_per_output_token=cost_per_output_token,
         )
 
-    def upload(self, base_url: str = RAGAS_API_URL, verbose: bool = True) -> str:
-        import requests
-
+    def upload(self, verbose: bool = True) -> str:
         packet = TestsetPacket(samples_original=self.samples, run_id=self.run_id)
-        response = requests.post(
-            f"{base_url}/alignment/testset", json=packet.model_dump()
+        response = upload_packet(
+            path="/alignment/testset",
+            data_json_string=packet.model_dump_json(),
         )
-        if response.status_code != 200:
-            raise Exception(f"Failed to upload results: {response.text}")
+        app_url = get_app_url()
 
-        testset_endpoint = f"https://app.ragas.io/alignment/testset/{packet.run_id}"
+        testset_endpoint = f"{app_url}/dashboard/alignment/testset/{self.run_id}"
+        if response.status_code == 409:
+            # this testset already exists
+            if verbose:
+                print(f"Testset already exists. View at {testset_endpoint}")
+            return testset_endpoint
+        elif response.status_code != 200:
+            # any other error
+            raise UploadException(
+                status_code=response.status_code,
+                message=f"Failed to upload results: {response.text}",
+            )
         if verbose:
             print(f"Testset uploaded! View at {testset_endpoint}")
         return testset_endpoint
+
+    @classmethod
+    def from_annotated(cls, path: str) -> Testset:
+        """
+        Loads a testset from an annotated JSON file from app.ragas.io.
+        """
+        import json
+
+        with open(path, "r") as f:
+            annotated_testset = json.load(f)
+
+        samples = []
+        for sample in annotated_testset:
+            if sample["approval_status"] == "approved":
+                samples.append(TestsetSample(**sample))
+        return cls(samples=samples)

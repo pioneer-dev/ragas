@@ -5,7 +5,6 @@ import logging
 import os
 import typing as t
 
-from .base import _check_if_language_is_supported
 from .pydantic_prompt import PydanticPrompt
 
 if t.TYPE_CHECKING:
@@ -21,14 +20,22 @@ class PromptMixin:
     eg: [BaseSynthesizer][ragas.testset.synthesizers.base.BaseSynthesizer], [MetricWithLLM][ragas.metrics.base.MetricWithLLM]
     """
 
+    name: str = ""
+
+    def _get_prompts(self) -> t.Dict[str, PydanticPrompt]:
+        prompts = {}
+        for key, value in inspect.getmembers(self):
+            if isinstance(value, PydanticPrompt):
+                prompts.update({key: value})
+        return prompts
+
     def get_prompts(self) -> t.Dict[str, PydanticPrompt]:
         """
         Returns a dictionary of prompts for the class.
         """
         prompts = {}
-        for name, value in inspect.getmembers(self):
-            if isinstance(value, PydanticPrompt):
-                prompts.update({name: value})
+        for _, value in self._get_prompts().items():
+            prompts.update({value.name: value})
         return prompts
 
     def set_prompts(self, **prompts):
@@ -41,6 +48,7 @@ class PromptMixin:
             If the prompt is not an instance of `PydanticPrompt`.
         """
         available_prompts = self.get_prompts()
+        name_to_var = {v.name: k for k, v in self._get_prompts().items()}
         for key, value in prompts.items():
             if key not in available_prompts:
                 raise ValueError(
@@ -50,7 +58,7 @@ class PromptMixin:
                 raise ValueError(
                     f"Prompt with name '{key}' must be an instance of 'ragas.prompt.PydanticPrompt'"
                 )
-            setattr(self, key, value)
+            setattr(self, name_to_var[key], value)
 
     async def adapt_prompts(
         self, language: str, llm: BaseRagasLLM, adapt_instruction: bool = False
@@ -83,10 +91,13 @@ class PromptMixin:
         prompts = self.get_prompts()
         for prompt_name, prompt in prompts.items():
             # hash_hex = f"0x{hash(prompt) & 0xFFFFFFFFFFFFFFFF:016x}"
-            prompt_file_name = os.path.join(
-                path, f"{prompt_name}_{prompt.language}.json"
-            )
-            prompt.save(prompt_file_name)
+            if self.name == "":
+                file_name = os.path.join(path, f"{prompt_name}_{prompt.language}.json")
+            else:
+                file_name = os.path.join(
+                    path, f"{self.name}_{prompt_name}_{prompt.language}.json"
+                )
+            prompt.save(file_name)
 
     def load_prompts(self, path: str, language: t.Optional[str] = None):
         """
@@ -103,11 +114,15 @@ class PromptMixin:
                 "Language not specified, loading prompts for default language: %s",
                 language,
             )
-        _check_if_language_is_supported(language)
 
         loaded_prompts = {}
         for prompt_name, prompt in self.get_prompts().items():
-            prompt_file_name = os.path.join(path, f"{prompt_name}_{language}.json")
-            loaded_prompt = prompt.__class__.load(prompt_file_name)
+            if self.name == "":
+                file_name = os.path.join(path, f"{prompt_name}_{language}.json")
+            else:
+                file_name = os.path.join(
+                    path, f"{self.name}_{prompt_name}_{language}.json"
+                )
+            loaded_prompt = prompt.__class__.load(file_name)
             loaded_prompts[prompt_name] = loaded_prompt
         return loaded_prompts

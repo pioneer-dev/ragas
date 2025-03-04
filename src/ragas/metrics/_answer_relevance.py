@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import typing as t
 from dataclasses import dataclass, field
@@ -94,7 +95,9 @@ class ResponseRelevancy(MetricWithLLM, MetricWithEmbeddings, SingleTurnMetric):
     strictness: int = 3
 
     def calculate_similarity(self, question: str, generated_questions: list[str]):
-        assert self.embeddings is not None
+        assert (
+            self.embeddings is not None
+        ), f"Error: '{self.name}' requires embeddings to be set."
         question_vec = np.asarray(self.embeddings.embed_query(question)).reshape(1, -1)
         gen_question_vec = np.asarray(
             self.embeddings.embed_documents(generated_questions)
@@ -136,14 +139,15 @@ class ResponseRelevancy(MetricWithLLM, MetricWithEmbeddings, SingleTurnMetric):
         assert self.llm is not None, "LLM is not set"
 
         prompt_input = ResponseRelevanceInput(response=row["response"])
-        responses = []
-        for _ in range(self.strictness):
-            response = await self.question_generation.generate(
+        tasks = [
+            self.question_generation.generate(
                 data=prompt_input,
                 llm=self.llm,
                 callbacks=callbacks,
             )
-            responses.append(response)
+            for _ in range(self.strictness)
+        ]
+        responses = await asyncio.gather(*tasks)
 
         return self._calculate_score(responses, row)
 

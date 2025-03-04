@@ -33,9 +33,9 @@ from ragas.metrics.base import (
     Metric,
     MetricWithEmbeddings,
     MetricWithLLM,
+    ModeMetric,
     MultiTurnMetric,
     SingleTurnMetric,
-    is_reproducable,
 )
 from ragas.run_config import RunConfig
 from ragas.utils import convert_v1_to_v2_dataset
@@ -59,8 +59,8 @@ def evaluate(
     metrics: t.Optional[t.Sequence[Metric]] = None,
     llm: t.Optional[BaseRagasLLM | LangchainLLM] = None,
     embeddings: t.Optional[BaseRagasEmbeddings | LangchainEmbeddings] = None,
+    experiment_name: t.Optional[str] = None,
     callbacks: Callbacks = None,
-    in_ci: bool = False,
     run_config: t.Optional[RunConfig] = None,
     token_usage_parser: t.Optional[TokenUsageParser] = None,
     raise_exceptions: bool = False,
@@ -89,14 +89,12 @@ def evaluate(
         The embeddings to use for the metrics. If not provided then ragas will use
         the default embeddings for metrics which require embeddings. This can we overridden by the embeddings specified in
         the metric level with `metric.embeddings`.
+    experiment_name: str, optional
+        The name of the experiment to track. This is used to track the evaluation in the tracing tools.
     callbacks: Callbacks, optional
         Lifecycle Langchain Callbacks to run during evaluation. Check the
         [langchain documentation](https://python.langchain.com/docs/modules/callbacks/)
         for more information.
-    in_ci: bool
-        Whether the evaluation is running in CI or not. If set to True then some
-        metrics will be run to increase the reproducability of the evaluations. This
-        will increase the runtime and cost of evaluations. Default is False.
     run_config: RunConfig, optional
         Configuration for runtime settings like timeout and retries. If not provided,
         default values are used.
@@ -193,7 +191,6 @@ def evaluate(
     binary_metrics = []
     llm_changed: t.List[int] = []
     embeddings_changed: t.List[int] = []
-    reproducable_metrics: t.List[int] = []
     answer_correctness_is_set = -1
 
     # loop through the metrics and perform initializations
@@ -214,12 +211,6 @@ def evaluate(
         if isinstance(metric, AnswerCorrectness):
             if metric.answer_similarity is None:
                 answer_correctness_is_set = i
-        # set reproducibility for metrics if in CI
-        if in_ci and is_reproducable(metric):
-            if metric.reproducibility == 1:  # type: ignore
-                # only set a value if not already set
-                metric.reproducibility = 3  # type: ignore
-                reproducable_metrics.append(i)
 
         # init all the models
         metric.init(run_config)
@@ -259,7 +250,7 @@ def evaluate(
     # new evaluation chain
     row_run_managers = []
     evaluation_rm, evaluation_group_cm = new_group(
-        name=RAGAS_EVALUATION_CHAIN_NAME,
+        name=experiment_name or RAGAS_EVALUATION_CHAIN_NAME,
         inputs={},
         callbacks=callbacks,
         metadata={"type": ChainType.EVALUATION},
@@ -313,7 +304,11 @@ def evaluate(
         for i, _ in enumerate(dataset):
             s = {}
             for j, m in enumerate(metrics):
-                s[m.name] = results[len(metrics) * i + j]
+                if isinstance(m, ModeMetric):  # type: ignore
+                    key = f"{m.name}(mode={m.mode})"
+                else:
+                    key = m.name
+                s[key] = results[len(metrics) * i + j]
             scores.append(s)
             # close the row chain
             row_rm, row_group_cm = row_run_managers[i]
@@ -354,7 +349,9 @@ def evaluate(
                 AnswerCorrectness, metrics[answer_correctness_is_set]
             ).answer_similarity = None
 
-        for i in reproducable_metrics:
-            metrics[i].reproducibility = 1  # type: ignore
+        # flush the analytics batcher
+        from ragas._analytics import _analytics_batcher
+
+        _analytics_batcher.flush()
 
     return result

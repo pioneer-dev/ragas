@@ -13,6 +13,7 @@ from langchain_openai.chat_models import AzureChatOpenAI, ChatOpenAI
 from langchain_openai.llms import AzureOpenAI, OpenAI
 from langchain_openai.llms.base import BaseOpenAI
 
+from ragas.cache import CacheInterface, cacher
 from ragas.exceptions import LLMDidNotFinishException
 from ragas.integrations.helicone import helicone_config
 from ragas.run_config import RunConfig, add_async_retry
@@ -22,6 +23,7 @@ if t.TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langchain_core.prompt_values import PromptValue
     from llama_index.core.base.llms.base import BaseLLM
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,13 @@ def is_multiple_completion_supported(llm: BaseLanguageModel) -> bool:
 class BaseRagasLLM(ABC):
     run_config: RunConfig = field(default_factory=RunConfig, repr=False)
     multiple_completion_supported: bool = field(default=False, repr=False)
+    cache: t.Optional[CacheInterface] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        # If a cache_backend is provided, wrap the implementation methods at construction time.
+        if self.cache is not None:
+            self.generate_text = cacher(cache_backend=self.cache)(self.generate_text)
+            self.agenerate_text = cacher(cache_backend=self.cache)(self.agenerate_text)
 
     def set_run_config(self, run_config: RunConfig):
         self.run_config = run_config
@@ -121,10 +130,12 @@ class LangchainLLMWrapper(BaseRagasLLM):
 
     def __init__(
         self,
-        langchain_llm: BaseLanguageModel,
+        langchain_llm: BaseLanguageModel[BaseMessage],
         run_config: t.Optional[RunConfig] = None,
         is_finished_parser: t.Optional[t.Callable[[LLMResult], bool]] = None,
+        cache: t.Optional[CacheInterface] = None,
     ):
+        super().__init__(cache=cache)
         self.langchain_llm = langchain_llm
         if run_config is None:
             run_config = RunConfig()
@@ -149,8 +160,9 @@ class LangchainLLMWrapper(BaseRagasLLM):
                 if finish_reason is not None:
                     # OpenAI uses "stop"
                     # Vertex AI uses "STOP" or "MAX_TOKENS"
+                    # WatsonX AI uses "eos_token"
                     is_finished_list.append(
-                        finish_reason in ["stop", "STOP", "MAX_TOKENS"]
+                        finish_reason in ["stop", "STOP", "MAX_TOKENS", "eos_token"]
                     )
 
                 # provied more conditions here
@@ -169,13 +181,14 @@ class LangchainLLMWrapper(BaseRagasLLM):
                     finish_reason = resp_message.response_metadata.get(
                         "finish_reason")
                     is_finished_list.append(
-                        finish_reason in ["stop", "STOP", "MAX_TOKENS"]
+                        finish_reason in ["stop", "STOP", "MAX_TOKENS", "eos_token"]
                     )
                 elif resp_message.response_metadata.get("stop_reason") is not None:
                     stop_reason = resp_message.response_metadata.get(
                         "stop_reason")
                     is_finished_list.append(
-                        stop_reason in ["end_turn", "STOP", "MAX_TOKENS"]
+                        stop_reason
+                        in ["end_turn", "stop", "STOP", "MAX_TOKENS", "eos_token"]
                     )
             # default to True
             else:
@@ -191,21 +204,23 @@ class LangchainLLMWrapper(BaseRagasLLM):
         callbacks: Callbacks = None,
     ) -> LLMResult:
         # figure out the temperature to set
+        old_temperature: float | None = None
         if temperature is None:
             temperature = self.get_temperature(n=n)
+        if hasattr(self.langchain_llm, "temperature"):
+            self.langchain_llm.temperature = temperature  # type: ignore
+            old_temperature = temperature
 
         if is_multiple_completion_supported(self.langchain_llm):
-            return self.langchain_llm.generate_prompt(
+            result = self.langchain_llm.generate_prompt(
                 prompts=[prompt],
                 n=n,
-                temperature=temperature,
                 stop=stop,
                 callbacks=callbacks,
             )
         else:
             result = self.langchain_llm.generate_prompt(
                 prompts=[prompt] * n,
-                temperature=temperature,
                 stop=stop,
                 callbacks=callbacks,
             )
@@ -213,7 +228,12 @@ class LangchainLLMWrapper(BaseRagasLLM):
             # note that LLMResult.runs is still a list that represents each run
             generations = [[g[0] for g in result.generations]]
             result.generations = generations
-            return result
+
+        # reset the temperature to the original value
+        if old_temperature is not None:
+            self.langchain_llm.temperature = old_temperature  # type: ignore
+
+        return result
 
     async def agenerate_text(
         self,
@@ -223,21 +243,25 @@ class LangchainLLMWrapper(BaseRagasLLM):
         stop: t.Optional[t.List[str]] = None,
         callbacks: Callbacks = None,
     ) -> LLMResult:
+        # handle temperature
+        old_temperature: float | None = None
         if temperature is None:
             temperature = self.get_temperature(n=n)
+        if hasattr(self.langchain_llm, "temperature"):
+            self.langchain_llm.temperature = temperature  # type: ignore
+            old_temperature = temperature
 
-        if is_multiple_completion_supported(self.langchain_llm):
-            return await self.langchain_llm.agenerate_prompt(
+        # handle n
+        if hasattr(self.langchain_llm, "n"):
+            self.langchain_llm.n = n  # type: ignore
+            result = await self.langchain_llm.agenerate_prompt(
                 prompts=[prompt],
-                n=n,
-                temperature=temperature,
                 stop=stop,
                 callbacks=callbacks,
             )
         else:
             result = await self.langchain_llm.agenerate_prompt(
                 prompts=[prompt] * n,
-                temperature=temperature,
                 stop=stop,
                 callbacks=callbacks,
             )
@@ -245,7 +269,12 @@ class LangchainLLMWrapper(BaseRagasLLM):
             # note that LLMResult.runs is still a list that represents each run
             generations = [[g[0] for g in result.generations]]
             result.generations = generations
-            return result
+
+        # reset the temperature to the original value
+        if old_temperature is not None:
+            self.langchain_llm.temperature = old_temperature  # type: ignore
+
+        return result
 
     def set_run_config(self, run_config: RunConfig):
         self.run_config = run_config
@@ -276,7 +305,9 @@ class LlamaIndexLLMWrapper(BaseRagasLLM):
         self,
         llm: BaseLLM,
         run_config: t.Optional[RunConfig] = None,
+        cache: t.Optional[CacheInterface] = None,
     ):
+        super().__init__(cache=cache)
         self.llm = llm
 
         try:

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import typing as t
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import field
-from typing import List
 
 import numpy as np
 from langchain_core.embeddings import Embeddings
@@ -12,6 +11,7 @@ from langchain_openai.embeddings import OpenAIEmbeddings
 from pydantic.dataclasses import dataclass
 from pydantic_core import CoreSchema, core_schema
 
+from ragas.cache import CacheInterface, cacher
 from ragas.run_config import RunConfig, add_async_retry, add_retry
 
 if t.TYPE_CHECKING:
@@ -35,8 +35,22 @@ class BaseRagasEmbeddings(Embeddings, ABC):
     """
 
     run_config: RunConfig
+    cache: t.Optional[CacheInterface] = None
 
-    async def embed_text(self, text: str, is_async=True) -> List[float]:
+    def __init__(self, cache: t.Optional[CacheInterface] = None):
+        super().__init__()
+        self.cache = cache
+        if self.cache is not None:
+            self.embed_query = cacher(cache_backend=self.cache)(self.embed_query)
+            self.embed_documents = cacher(cache_backend=self.cache)(
+                self.embed_documents
+            )
+            self.aembed_query = cacher(cache_backend=self.cache)(self.aembed_query)
+            self.aembed_documents = cacher(cache_backend=self.cache)(
+                self.aembed_documents
+            )
+
+    async def embed_text(self, text: str, is_async=True) -> t.List[float]:
         """
         Embed a single text string.
         """
@@ -44,7 +58,7 @@ class BaseRagasEmbeddings(Embeddings, ABC):
         return embs[0]
 
     async def embed_texts(
-        self, texts: List[str], is_async: bool = True
+        self, texts: t.List[str], is_async: bool = True
     ) -> t.List[t.List[float]]:
         """
         Embed multiple texts.
@@ -60,6 +74,12 @@ class BaseRagasEmbeddings(Embeddings, ABC):
                 self.embed_documents, self.run_config
             )
             return await loop.run_in_executor(None, embed_documents_with_retry, texts)
+
+    @abstractmethod
+    async def aembed_query(self, text: str) -> t.List[float]: ...
+
+    @abstractmethod
+    async def aembed_documents(self, texts: t.List[str]) -> t.List[t.List[float]]: ...
 
     def set_run_config(self, run_config: RunConfig):
         """
@@ -85,32 +105,36 @@ class LangchainEmbeddingsWrapper(BaseRagasEmbeddings):
     """
 
     def __init__(
-        self, embeddings: Embeddings, run_config: t.Optional[RunConfig] = None
+        self,
+        embeddings: Embeddings,
+        run_config: t.Optional[RunConfig] = None,
+        cache: t.Optional[CacheInterface] = None,
     ):
+        super().__init__(cache=cache)
         self.embeddings = embeddings
         if run_config is None:
             run_config = RunConfig()
         self.set_run_config(run_config)
 
-    def embed_query(self, text: str) -> List[float]:
+    def embed_query(self, text: str) -> t.List[float]:
         """
         Embed a single query text.
         """
         return self.embeddings.embed_query(text)
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+    def embed_documents(self, texts: t.List[str]) -> t.List[t.List[float]]:
         """
         Embed multiple documents.
         """
         return self.embeddings.embed_documents(texts)
 
-    async def aembed_query(self, text: str) -> List[float]:
+    async def aembed_query(self, text: str) -> t.List[float]:
         """
         Asynchronously embed a single query text.
         """
         return await self.embeddings.aembed_query(text)
 
-    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_documents(self, texts: t.List[str]) -> t.List[t.List[float]]:
         """
         Asynchronously embed multiple documents.
         """
@@ -189,11 +213,13 @@ class HuggingfaceEmbeddings(BaseRagasEmbeddings):
     cache_folder: t.Optional[str] = None
     model_kwargs: t.Dict[str, t.Any] = field(default_factory=dict)
     encode_kwargs: t.Dict[str, t.Any] = field(default_factory=dict)
+    cache: t.Optional[CacheInterface] = None
 
     def __post_init__(self):
         """
         Initialize the model after the object is created.
         """
+        super().__init__(cache=self.cache)
         try:
             import sentence_transformers
             from transformers import AutoConfig
@@ -226,13 +252,16 @@ class HuggingfaceEmbeddings(BaseRagasEmbeddings):
         if "convert_to_tensor" not in self.encode_kwargs:
             self.encode_kwargs["convert_to_tensor"] = True
 
-    def embed_query(self, text: str) -> List[float]:
+        if self.cache is not None:
+            self.predict = cacher(cache_backend=self.cache)(self.predict)
+
+    def embed_query(self, text: str) -> t.List[float]:
         """
         Embed a single query text.
         """
         return self.embed_documents([text])[0]
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+    def embed_documents(self, texts: t.List[str]) -> t.List[t.List[float]]:
         """
         Embed multiple documents.
         """
@@ -249,7 +278,7 @@ class HuggingfaceEmbeddings(BaseRagasEmbeddings):
         assert isinstance(embeddings, Tensor)
         return embeddings.tolist()
 
-    def predict(self, texts: List[List[str]]) -> List[List[float]]:
+    def predict(self, texts: t.List[t.List[str]]) -> t.List[t.List[float]]:
         """
         Make predictions using a cross-encoder model.
         """
@@ -297,8 +326,12 @@ class LlamaIndexEmbeddingsWrapper(BaseRagasEmbeddings):
     """
 
     def __init__(
-        self, embeddings: BaseEmbedding, run_config: t.Optional[RunConfig] = None
+        self,
+        embeddings: BaseEmbedding,
+        run_config: t.Optional[RunConfig] = None,
+        cache: t.Optional[CacheInterface] = None,
     ):
+        super().__init__(cache=cache)
         self.embeddings = embeddings
         if run_config is None:
             run_config = RunConfig()

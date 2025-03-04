@@ -17,6 +17,10 @@ sample = SingleTurnSample(
 scorer = NonLLMStringSimilarity()
 await scorer.single_turn_ascore(sample)
 ```
+Output
+```
+0.8918918918918919
+```
 
 One can choose from available string distance measures from `DistanceMeasure`. Here is an example of using Hamming distance.
 
@@ -29,7 +33,7 @@ scorer = NonLLMStringSimilarity(distance_measure=DistanceMeasure.HAMMING)
 
 ## BLEU Score
 
-The `BleuScore` score is a metric used to evaluate the quality of `response` by comparing it with `reference`. It measures the similarity between the response and the reference based on n-gram precision and brevity penalty. BLEU score was originally designed to evaluate machine translation systems, but it is also used in other natural language processing tasks. Since it was designed to evaluate machine translation systems, it expects the response and reference to contain same number of sentences. The comparison is done at sentence level. BLEU score ranges from 0 to 1, where 1 indicates a perfect match between the response and the reference. This is a non LLM based metric.
+The `BleuScore` score is a metric used to evaluate the quality of `response` by comparing it with `reference`. It measures the similarity between the response and the reference based on n-gram precision and brevity penalty. BLEU score was originally designed to evaluate machine translation systems, but it is also used in other natural language processing tasks. BLEU score ranges from 0 to 1, where 1 indicates a perfect match between the response and the reference. This is a non LLM based metric.
 
 ### Example
 ```python
@@ -44,12 +48,10 @@ sample = SingleTurnSample(
 scorer = BleuScore()
 await scorer.single_turn_ascore(sample)
 ```
-Custom weights may be supplied to fine-tune the BLEU score further. A tuple of float weights for unigrams, bigrams, trigrams and so on can be given by
-
-```python
-scorer = BleuScore(weights=(0.25, 0.25, 0.25, 0.25))
+Output
 ```
-
+0.7071067811865478
+```
 
 
 ## ROUGE Score
@@ -68,17 +70,21 @@ sample = SingleTurnSample(
 scorer = RougeScore()
 await scorer.single_turn_ascore(sample)
 ```
-
-You can change the `rouge_type` to `rouge-1`, `rouge-2`, or `rouge-l` to calculate the ROUGE score based on unigrams, bigrams, or longest common subsequence respectively.
-
-```python
-scorer = RougeScore(rouge_type="rouge-1")
+Output
+```
+0.8571428571428571
 ```
 
-You can change the `measure_type` to `precision`, `recall`, or `f1` to calculate the ROUGE score based on precision, recall, or F1 score respectively.
+You can change the `rouge_type` to `rouge1` or `rougeL` to calculate the ROUGE score based on unigrams or longest common subsequence respectively.
 
 ```python
-scorer = RougeScore(measure_type="recall")
+scorer = RougeScore(rouge_type="rouge1")
+```
+
+You can change the `mode` to `precision`, `recall`, or `fmeasure` to calculate the ROUGE score based on precision, recall, or F1 score respectively.
+
+```python
+scorer = RougeScore(mode="recall")
 ```
 
 ## Exact Match
@@ -96,6 +102,10 @@ sample = SingleTurnSample(
 scorer = ExactMatch()
 await scorer.single_turn_ascore(sample)
 ```
+Output
+```
+0.0
+```
 
 ## String Presence
 The `StringPresence` metric checks if the response contains the reference text. It is useful in scenarios where you need to ensure that the generated response contains certain keywords or phrases. The metric returns 1 if the response contains the reference, and 0 otherwise.
@@ -110,4 +120,8 @@ sample = SingleTurnSample(
 )
 scorer = StringPresence()
 await scorer.single_turn_ascore(sample)
+```
+Output
+```
+1.0
 ```

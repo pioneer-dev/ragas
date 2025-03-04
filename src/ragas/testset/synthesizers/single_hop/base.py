@@ -64,9 +64,9 @@ class SingleHopQuerySynthesizer(BaseSynthesizer[Scenario]):
             if any(term.lower() in concepts for term in terms):
                 if persona_list[persona]:
                     valid_personas.append(persona_list[persona])
-            sample["personas"] = valid_personas
-            sample["styles"] = list(QueryStyle)
-            sample["lengths"] = list(QueryLength)
+        sample["personas"] = valid_personas
+        sample["styles"] = list(QueryStyle)
+        sample["lengths"] = list(QueryLength)
 
         return [sample]
 
@@ -119,9 +119,10 @@ class SingleHopQuerySynthesizer(BaseSynthesizer[Scenario]):
         )
 
     async def _generate_sample(
-        self, scenario: SingleHopScenario, callbacks: Callbacks
+        self, scenario: Scenario, callbacks: Callbacks
     ) -> SingleTurnSample:
-
+        if not isinstance(scenario, SingleHopScenario):
+            raise TypeError("scenario type should be SingleHopScenario")
         reference_context = scenario.nodes[0].properties.get("page_content", "")
         prompt_input = QueryCondition(
             persona=scenario.persona,

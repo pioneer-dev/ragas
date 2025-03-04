@@ -8,18 +8,16 @@ import numpy as np
 
 from ragas.dataset_schema import SingleTurnSample
 from ragas.metrics._faithfulness import (
-    FaithfulnessStatements,
-    HasSegmentMethod,
-    LongFormAnswerPrompt,
     NLIStatementInput,
     NLIStatementPrompt,
+    StatementGeneratorInput,
+    StatementGeneratorPrompt,
 )
 from ragas.metrics.base import (
     MetricOutputType,
     MetricType,
     MetricWithLLM,
     SingleTurnMetric,
-    get_segmenter,
 )
 from ragas.prompt import PydanticPrompt
 
@@ -33,7 +31,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class NoiseSensitivity(MetricWithLLM, SingleTurnMetric):
     name: str = "noise_sensitivity"
-    focus: t.Literal["relevant", "irrelevant"] = "relevant"
+    mode: t.Literal["relevant", "irrelevant"] = "relevant"
     _required_columns: t.Dict[MetricType, t.Set[str]] = field(
         default_factory=lambda: {
             MetricType.SINGLE_TURN: {
@@ -45,44 +43,25 @@ class NoiseSensitivity(MetricWithLLM, SingleTurnMetric):
         }
     )
     output_type: t.Optional[MetricOutputType] = MetricOutputType.CONTINUOUS
-    nli_statements_message: PydanticPrompt = field(default_factory=NLIStatementPrompt)
-    statement_prompt: PydanticPrompt = field(default_factory=LongFormAnswerPrompt)
-    sentence_segmenter: t.Optional[HasSegmentMethod] = None
+    nli_statements_prompt: PydanticPrompt = field(default_factory=NLIStatementPrompt)
+    statement_generator_prompt: PydanticPrompt = field(
+        default_factory=StatementGeneratorPrompt
+    )
     max_retries: int = 1
-    _reproducibility: int = 1
-
-    @property
-    def reproducibility(self):
-        return self._reproducibility
-
-    @reproducibility.setter
-    def reproducibility(self, value):
-        if value < 1:
-            logger.warning("reproducibility cannot be less than 1, setting to 1")
-            value = 1
-        elif value % 2 == 0:
-            logger.warning(
-                "reproducibility level cannot be set to even number, setting to odd"
-            )
-            value += 1
-        self._reproducibility = value
 
     def __post_init__(self):
-        if self.sentence_segmenter is None:
-            language = self.nli_statements_message.language
-            self.sentence_segmenter = get_segmenter(language=language, clean=False)
-        if self.focus not in {"relevant", "irrelevant"}:
+
+        if self.mode not in {"relevant", "irrelevant"}:
             raise ValueError(
-                f"Invalid argument passed for 'focus': {self.focus}. Must be 'relevant' or 'irrelevant'."
+                f"Invalid argument passed for 'mode': {self.mode}. Must be 'relevant' or 'irrelevant'."
             )
-        self.name = f"{self.name}_{self.focus}"
 
     async def _evaluate_statement_faithfulness(
         self, statements: t.List[str], context: str, callbacks: Callbacks
     ) -> t.List[int]:
         assert self.llm is not None, "LLM is not set"
 
-        verdicts = await self.nli_statements_message.generate(
+        verdicts = await self.nli_statements_prompt.generate(
             data=NLIStatementInput(context=context, statements=statements),
             llm=self.llm,
             callbacks=callbacks,
@@ -97,24 +76,13 @@ class NoiseSensitivity(MetricWithLLM, SingleTurnMetric):
         self, text: str, question: str, callbacks: Callbacks
     ) -> t.List[str]:
         assert self.llm is not None, "LLM is not set"
-        assert self.sentence_segmenter is not None, "sentence_segmenter is not set"
 
-        sentences = self.sentence_segmenter.segment(text)
-        sentences_with_index = {i: sentence for i, sentence in enumerate(sentences)}
-
-        statements_simplified = await self.statement_prompt.generate(
+        statements = await self.statement_generator_prompt.generate(
             llm=self.llm,
-            data=FaithfulnessStatements(
-                question=question, answer=text, sentences=sentences_with_index
-            ),
+            data=StatementGeneratorInput(question=question, answer=text),
             callbacks=callbacks,
         )
-
-        statements = []
-        if statements_simplified is None:
-            return statements
-        for component in statements_simplified.sentences:
-            statements.extend(component.simpler_statements)
+        statements = statements.statements
         return statements
 
     def _compute_score(self, answers: t.Dict) -> float:
@@ -141,7 +109,7 @@ class NoiseSensitivity(MetricWithLLM, SingleTurnMetric):
         noise_sensitivity_in_relevant = np.mean(relevant_faithful & incorrect)
         noise_sensitivity_in_irrelevant = np.mean(irrelevant_faithful & incorrect)
 
-        if self.focus == "irrelevant":
+        if self.mode == "irrelevant":
             return noise_sensitivity_in_irrelevant
 
         return noise_sensitivity_in_relevant
