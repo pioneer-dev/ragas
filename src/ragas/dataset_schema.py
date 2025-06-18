@@ -28,6 +28,7 @@ from ragas.sdk import (
     upload_packet,
 )
 from ragas.utils import safe_nanmean
+from pydantic import Field 
 
 if t.TYPE_CHECKING:
     from pathlib import Path
@@ -93,6 +94,12 @@ class SingleTurnSample(BaseSample):
     multi_responses: t.Optional[t.List[str]] = None
     reference: t.Optional[str] = None
     rubrics: t.Optional[t.Dict[str, str]] = None
+
+    raw_node_ids:        t.List[str] = Field(default_factory=list)
+    reranked_node_ids:   t.List[str] = Field(default_factory=list)
+    reference_sql:       t.Optional[t.List[str]] = None
+    generated_sql:       t.Optional[t.List[str]] = None
+    reason:              t.Optional[str] = None
 
 
 class MultiTurnSample(BaseSample):
